@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$title$$if(title-suffix)$ — $site-title$$endif$</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="site-title" href="/">$site-title$</a>
+$if(edition-label)$
+      <span class="edition-label">Edition $edition-label$</span>
+$endif$
+      <nav aria-label="Primary navigation">
+        <a href="/">Home</a>
+$if(has-latest)$
+        <a href="/latest/">Latest</a>
+$endif$
+$if(has-editions)$
+        <a href="/editions/">Editions</a>
+$endif$
+$if(has-topics)$
+        <a href="/areas/">Topics</a>
+$endif$
+$if(has-corrections)$
+        <a href="/corrections-removal/">Corrections</a>
+$endif$
+$if(has-license)$
+        <a href="/LICENSE">License</a>
+$endif$
+      </nav>
+    </div>
+  </header>
+  <main id="content">
+$body$
+  </main>
+  <footer>
+    <p>$site-title$</p>
+    <p>
+$if(has-license)$
+      <a href="/LICENSE">License</a>
+$endif$
+$if(has-license)$$if(has-citation)$
+      <span aria-hidden="true"> · </span>
+$endif$$endif$
+$if(has-citation)$
+      <a href="/CITATION/">Citation guidance</a>
+$endif$
+    </p>
+  </footer>
+</body>
+</html>
