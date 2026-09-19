@@ -358,6 +358,10 @@ def load_areas(path: Path) -> dict[str, Area]:
             if parent in seen:
                 raise BuildError(f"{path}: area hierarchy cycle at {area.slug}")
             seen.add(parent)
+            if area.status == "open" and areas[parent].status == "closed":
+                raise BuildError(
+                    f"{path}: open area {area.slug} has closed ancestor {parent}"
+                )
             parent = areas[parent].parent
     return areas
 
@@ -388,6 +392,31 @@ def area_is_descendant(candidate: str, ancestor: str, areas: dict[str, Area]) ->
 def markdown_link(label: str, url: str) -> str:
     safe_label = label.replace("[", "\\[").replace("]", "\\]")
     return f"[{safe_label}]({url})"
+
+
+def open_area_children(areas: dict[str, Area]) -> dict[str | None, list[Area]]:
+    children: dict[str | None, list[Area]] = {}
+    for area in areas.values():
+        if area.status == "open":
+            children.setdefault(area.parent, []).append(area)
+    for siblings in children.values():
+        siblings.sort(key=lambda item: (item.title.casefold(), item.slug))
+    return children
+
+
+def area_tree_markdown(children: dict[str | None, list[Area]]) -> list[str]:
+    lines: list[str] = []
+
+    def add_children(parent: str | None, depth: int) -> None:
+        for area in children.get(parent, []):
+            lines.append(
+                "    " * depth
+                + f"- {markdown_link(area.title, '/areas/' + area.slug + '/')}"
+            )
+            add_children(area.slug, depth + 1)
+
+    add_children(None, 0)
+    return lines
 
 
 def generated_page(markdown: str, title: str, output: PurePosixPath, label: str) -> Page:
@@ -657,11 +686,9 @@ def build(args: argparse.Namespace) -> None:
 
     if args.areas:
         open_areas = [area for area in area_registry.values() if area.status == "open"]
+        area_children = open_area_children(area_registry)
         index_body = ["# Topics", "", "Open research areas:", ""]
-        index_body.extend(
-            f"- {markdown_link(area.title, '/areas/' + area.slug + '/')}"
-            for area in sorted(open_areas, key=lambda item: (item.title.casefold(), item.slug))
-        )
+        index_body.extend(area_tree_markdown(area_children))
         index_body.append("")
         index_page = generated_page(
             "\n".join(index_body), "Topics", PurePosixPath("areas/index.html"), "generated:areas"
@@ -679,6 +706,22 @@ def build(args: argparse.Namespace) -> None:
                     members.append(page)
             members.sort(key=lambda item: (item.title.casefold(), clean_url_for_output(item.output)))
             body = [f"# {area.title}", ""]
+            if area.parent is not None:
+                parent = area_registry[area.parent]
+                body.append(
+                    "Parent topic: "
+                    + markdown_link(parent.title, "/areas/" + parent.slug + "/")
+                )
+                body.append("")
+            children = area_children.get(area.slug, [])
+            if children:
+                body.append("Sub-topics:")
+                body.append("")
+                body.extend(
+                    f"- {markdown_link(child.title, '/areas/' + child.slug + '/')}"
+                    for child in children
+                )
+                body.append("")
             if members:
                 body.append("Pages in this area and its open sub-areas:")
                 body.append("")

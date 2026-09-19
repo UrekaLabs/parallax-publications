@@ -235,8 +235,140 @@ def test_area_hubs_include_open_descendants_and_mapping(tmp_path: Path) -> None:
     )
     assert "/direct/" in parent and "/mapped/" in parent
     assert "/mapped/" in child and "/direct/" not in child
+    assert 'href="/areas/oversight/iran-contra/"' in parent
+    assert 'href="/areas/oversight/"' in child
     assert not (out / "areas" / "closed").exists()
     assert 'href="/areas/"' in (out / "mapped" / "index.html").read_text(encoding="utf-8")
+
+
+def test_area_index_is_recursive_and_navigation_is_deterministic(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "page.md").write_text(
+        "---\ntitle: Assigned Page\nareas: [oversight/iran-contra/hearings]\n---\n\n# Page\n",
+        encoding="utf-8",
+    )
+    areas = tmp_path / "areas.json"
+    areas.write_text(
+        json.dumps(
+            [
+                {"slug": "epstein", "title": "Epstein", "parent": None, "status": "open"},
+                {
+                    "slug": "epstein/legal-record",
+                    "title": "The Legal Record",
+                    "parent": "epstein",
+                    "status": "open",
+                },
+                {
+                    "slug": "oversight",
+                    "title": "Congressional Oversight",
+                    "parent": None,
+                    "status": "open",
+                },
+                {
+                    "slug": "oversight/oversight-law",
+                    "title": "Oversight Law",
+                    "parent": "oversight",
+                    "status": "open",
+                },
+                {
+                    "slug": "oversight/iran-contra",
+                    "title": "Iran-Contra",
+                    "parent": "oversight",
+                    "status": "open",
+                },
+                {
+                    "slug": "oversight/iran-contra/hearings",
+                    "title": "Hearings",
+                    "parent": "oversight/iran-contra",
+                    "status": "open",
+                },
+                {
+                    "slug": "oversight/secret",
+                    "title": "Secret",
+                    "parent": "oversight",
+                    "status": "closed",
+                },
+                {"slug": "jfk", "title": "JFK", "parent": None, "status": "closed"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    first, second = tmp_path / "first", tmp_path / "second"
+
+    for out in (first, second):
+        result = run_build(src, out, "atlas", "--areas", str(areas))
+        assert result.returncode == 0, result.stderr
+    assert tree_hashes(first) == tree_hashes(second)
+
+    index = (first / "areas" / "index.html").read_text(encoding="utf-8")
+    slugs = [
+        "oversight",
+        "oversight/iran-contra",
+        "oversight/iran-contra/hearings",
+        "oversight/oversight-law",
+        "epstein",
+        "epstein/legal-record",
+    ]
+    positions = [index.index(f'href="/areas/{slug}/"') for slug in slugs]
+    assert positions == sorted(positions)
+    assert "<ul>" in index[positions[0] : positions[1]]
+    assert "<ul>" in index[positions[1] : positions[2]]
+    assert "</ul>" in index[positions[3] : positions[4]]
+    assert "/areas/oversight/secret/" not in index
+    assert "/areas/jfk/" not in index
+
+    oversight = (first / "areas" / "oversight" / "index.html").read_text(encoding="utf-8")
+    iran_contra = (
+        first / "areas" / "oversight" / "iran-contra" / "index.html"
+    ).read_text(encoding="utf-8")
+    hearings = (
+        first / "areas" / "oversight" / "iran-contra" / "hearings" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert oversight.index('/areas/oversight/iran-contra/') < oversight.index(
+        '/areas/oversight/oversight-law/'
+    )
+    assert "/areas/oversight/secret/" not in oversight
+    assert 'href="/areas/oversight/"' in iran_contra
+    assert 'href="/areas/oversight/iran-contra/hearings/"' in iran_contra
+    assert 'href="/areas/oversight/iran-contra/"' in hearings
+    assert "/page/" in oversight and "/page/" in iran_contra and "/page/" in hearings
+    assert not (first / "areas" / "oversight" / "secret").exists()
+    assert not (first / "areas" / "jfk").exists()
+
+
+def test_open_area_with_closed_ancestor_is_rejected_before_output(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    areas = tmp_path / "areas.json"
+    areas.write_text(
+        json.dumps(
+            [
+                {"slug": "root", "title": "Root", "parent": None, "status": "open"},
+                {
+                    "slug": "root/closed",
+                    "title": "Closed",
+                    "parent": "root",
+                    "status": "closed",
+                },
+                {
+                    "slug": "root/closed/open",
+                    "title": "Invalid Open Descendant",
+                    "parent": "root/closed",
+                    "status": "open",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+
+    result = run_build(src, out, "atlas", "--areas", str(areas))
+
+    assert result.returncode == 1
+    assert "closed" in result.stderr.lower()
+    assert "root/closed/open" in result.stderr
+    assert not out.exists()
 
 
 def write_area_registry(path: Path) -> None:
