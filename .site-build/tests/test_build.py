@@ -239,6 +239,146 @@ def test_area_hubs_include_open_descendants_and_mapping(tmp_path: Path) -> None:
     assert 'href="/areas/"' in (out / "mapped" / "index.html").read_text(encoding="utf-8")
 
 
+def write_area_registry(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            [
+                {"slug": "oversight", "title": "Oversight", "parent": None, "status": "open"},
+                {
+                    "slug": "oversight/subtopic",
+                    "title": "Subtopic",
+                    "parent": "oversight",
+                    "status": "open",
+                },
+                {"slug": "closed", "title": "Closed", "parent": None, "status": "closed"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_page_area_map_falls_back_to_filename_stem(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "nested").mkdir(parents=True)
+    (src / "nested" / "atlas-stem.md").write_text(
+        "---\ntitle: Stem Mapped\n---\n\n# Stem Mapped\n", encoding="utf-8"
+    )
+    areas = tmp_path / "areas.json"
+    write_area_registry(areas)
+    mapping = tmp_path / "map.json"
+    mapping.write_text(json.dumps({"atlas-stem": ["oversight/subtopic"]}), encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = run_build(src, out, "atlas", "--areas", str(areas), "--page-areas", str(mapping))
+
+    assert result.returncode == 0, result.stderr
+    parent = (out / "areas" / "oversight" / "index.html").read_text(encoding="utf-8")
+    child = (out / "areas" / "oversight" / "subtopic" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "/nested/atlas-stem/" in parent
+    assert "/nested/atlas-stem/" in child
+    manifest = json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["unmatched_page_area_keys"] == []
+
+
+@pytest.mark.parametrize(
+    ("mapped_area", "needle"),
+    [
+        ("closed", "closed"),
+        ("missing", "unknown area"),
+    ],
+)
+def test_stem_fallback_preserves_area_validation(
+    tmp_path: Path, mapped_area: str, needle: str
+) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "atlas-stem.md").write_text("# Stem Mapped\n", encoding="utf-8")
+    areas = tmp_path / "areas.json"
+    write_area_registry(areas)
+    mapping = tmp_path / "map.json"
+    mapping.write_text(json.dumps({"atlas-stem": [mapped_area]}), encoding="utf-8")
+
+    result = run_build(
+        src,
+        tmp_path / "out",
+        "atlas",
+        "--areas",
+        str(areas),
+        "--page-areas",
+        str(mapping),
+    )
+
+    assert result.returncode == 1
+    assert "atlas-stem.md" in result.stderr
+    assert needle in result.stderr.lower()
+
+
+def test_mapped_duplicate_stem_is_ambiguous(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "one").mkdir(parents=True)
+    (src / "two").mkdir()
+    (src / "one" / "shared.md").write_text("# First\n", encoding="utf-8")
+    (src / "two" / "shared.md").write_text("# Second\n", encoding="utf-8")
+    areas = tmp_path / "areas.json"
+    write_area_registry(areas)
+    mapping = tmp_path / "map.json"
+    mapping.write_text(json.dumps({"shared": ["oversight"]}), encoding="utf-8")
+
+    result = run_build(
+        src,
+        tmp_path / "out",
+        "atlas",
+        "--areas",
+        str(areas),
+        "--page-areas",
+        str(mapping),
+    )
+
+    assert result.returncode == 1
+    assert "ambiguous" in result.stderr.lower()
+    assert "one/shared.md" in result.stderr
+    assert "two/shared.md" in result.stderr
+
+
+def test_unmatched_page_area_keys_warn_manifest_and_strict_fail(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "page.md").write_text("# Page\n", encoding="utf-8")
+    areas = tmp_path / "areas.json"
+    write_area_registry(areas)
+    mapping = tmp_path / "map.json"
+    mapping.write_text(
+        json.dumps({"z-missing": ["oversight"], "a-missing": ["oversight"]}),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "out"
+    result = run_build(src, out, "atlas", "--areas", str(areas), "--page-areas", str(mapping))
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.splitlines() == [
+        "warning: unmatched page-area key: 'a-missing'",
+        "warning: unmatched page-area key: 'z-missing'",
+    ]
+    manifest = json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["unmatched_page_area_keys"] == ["a-missing", "z-missing"]
+
+    strict = run_build(
+        src,
+        tmp_path / "strict-out",
+        "atlas",
+        "--areas",
+        str(areas),
+        "--page-areas",
+        str(mapping),
+        "--strict-page-areas",
+    )
+    assert strict.returncode == 1
+    assert "unmatched" in strict.stderr.lower()
+    assert "a-missing" in strict.stderr and "z-missing" in strict.stderr
+
+
 @pytest.mark.parametrize(
     ("area_value", "needle"),
     [

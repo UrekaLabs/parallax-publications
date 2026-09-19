@@ -501,6 +501,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--areas", type=Path)
     parser.add_argument("--page-areas", type=Path)
+    parser.add_argument("--strict-page-areas", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -540,10 +541,21 @@ def build(args: argparse.Namespace) -> None:
     area_registry = load_areas(args.areas) if args.areas else {}
     page_area_map = load_page_areas(args.page_areas) if args.page_areas and args.areas else {}
 
+    mapped_stem_sources: dict[str, list[str]] = {}
+    for rel, _ in source_files:
+        if rel.suffix == ".md" and rel.stem in page_area_map:
+            mapped_stem_sources.setdefault(rel.stem, []).append(rel.as_posix())
+    for stem, sources in sorted(mapped_stem_sources.items()):
+        if len(sources) > 1:
+            raise BuildError(
+                f"ambiguous page-area stem {stem!r}: " + ", ".join(sorted(sources))
+            )
+
     pages: list[Page] = []
     copies: list[tuple[PurePosixPath, Path]] = []
     reserved: dict[PurePosixPath, str] = {}
     inputs: dict[str, str] = {}
+    matched_page_area_keys: set[str] = set()
     for rel, path in source_files:
         inputs[f"src/{rel.as_posix()}"] = sha256_file(path)
         if rel.suffix == ".md":
@@ -560,12 +572,20 @@ def build(args: argparse.Namespace) -> None:
             if args.areas:
                 public_id = metadata_scalar(meta, "public_id", rel.as_posix())
                 frontmatter_areas = metadata_list(meta, "areas", rel.as_posix())
+                page_area_key: str | None = None
                 if frontmatter_areas is not None:
                     assigned = frontmatter_areas
                 elif public_id and public_id in page_area_map:
+                    page_area_key = public_id
                     assigned = page_area_map[public_id]
                 elif rel.as_posix() in page_area_map:
+                    page_area_key = rel.as_posix()
                     assigned = page_area_map[rel.as_posix()]
+                elif rel.stem in page_area_map:
+                    page_area_key = rel.stem
+                    assigned = page_area_map[rel.stem]
+                if page_area_key is not None:
+                    matched_page_area_keys.add(page_area_key)
                 for slug in assigned:
                     if slug not in area_registry:
                         raise BuildError(f"{rel.as_posix()}: page names unknown area {slug}")
@@ -577,6 +597,16 @@ def build(args: argparse.Namespace) -> None:
         else:
             reserve_output(reserved, rel, rel.as_posix())
             copies.append((rel, path))
+
+    unmatched_page_area_keys = sorted(set(page_area_map) - matched_page_area_keys)
+    if unmatched_page_area_keys:
+        if args.strict_page_areas:
+            raise BuildError(
+                "unmatched page-area keys: "
+                + ", ".join(repr(key) for key in unmatched_page_area_keys)
+            )
+        for key in unmatched_page_area_keys:
+            print(f"warning: unmatched page-area key: {key!r}", file=sys.stderr)
 
     edition_ids = sorted(
         {
@@ -731,6 +761,7 @@ def build(args: argparse.Namespace) -> None:
         "pandoc_version": version,
         "surface": args.surface,
         "base_url": base_url,
+        "unmatched_page_area_keys": unmatched_page_area_keys,
         "inputs": dict(sorted(inputs.items())),
         "outputs": dict(sorted(output_hashes.items())),
         "manifest_self_hash_scope": (
