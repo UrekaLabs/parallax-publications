@@ -4,7 +4,7 @@ Edition label: `2026-10`
 
 Security contact:
 
-- Email: `security@parallax.example`
+- Email: `security@urekalabs.ai`
 - Use this channel for disclosure of content integrity, publication safety, link-closure, or sensitive-data issues.
 
 Scope:
