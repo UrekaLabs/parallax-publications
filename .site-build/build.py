@@ -438,6 +438,7 @@ def render_page(
     template: Path,
     site_title: str,
     chrome: dict[str, bool],
+    canonical_url: str,
 ) -> None:
     page.document["meta"]["title"] = {"t": "MetaString", "c": page.title}
     command = [
@@ -448,6 +449,8 @@ def render_page(
         f"--template={template}",
         "--variable",
         f"site-title={site_title}",
+        "--variable",
+        f"canonical-url={html.escape(canonical_url, quote=True)}",
     ]
     if page.title != site_title:
         command.extend(["--variable", "title-suffix=true"])
@@ -511,6 +514,11 @@ def reserve_output(
         raise BuildError(
             f"{source_label}: output collision at {destination.as_posix()} with {reserved[destination]}"
         )
+    for existing, owner in reserved.items():
+        if existing in destination.parents or destination in existing.parents:
+            raise BuildError(
+                f"{source_label}: output collision at {destination.as_posix()} with {owner}"
+            )
     reserved[destination] = source_label
 
 
@@ -588,6 +596,8 @@ def build(args: argparse.Namespace) -> None:
     for rel, path in source_files:
         inputs[f"src/{rel.as_posix()}"] = sha256_file(path)
         if rel.suffix == ".md":
+            reserve_output(reserved, rel, rel.as_posix())
+            copies.append((rel, path))
             try:
                 markdown = path.read_text(encoding="utf-8")
             except (OSError, UnicodeError) as exc:
@@ -762,7 +772,10 @@ def build(args: argparse.Namespace) -> None:
         "has-citation": PurePosixPath("CITATION/index.html") in planned,
     }
     for page in sorted(pages, key=lambda item: item.output.as_posix()):
-        render_page(page, out / page.output.as_posix(), template, SITE_TITLES[args.surface], chrome)
+        render_page(
+            page, out / page.output.as_posix(), template, SITE_TITLES[args.surface], chrome,
+            base_url + clean_url_for_output(page.output),
+        )
 
     headers = """/*
   Content-Security-Policy: default-src 'self'

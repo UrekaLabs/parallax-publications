@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 from pathlib import Path
 import subprocess
@@ -104,7 +105,9 @@ def test_build_is_deterministic_and_complete(tmp_path: Path) -> None:
     assert (first / "LICENSE").read_text(encoding="utf-8") == "Synthetic license\n"
     assert (first / "data.json").is_file()
     assert not (first / ".hidden.md").exists()
-    assert not list(first.rglob("*.md"))
+    for source in src.rglob("*.md"):
+        if not source.name.startswith("."):
+            assert (first / source.relative_to(src)).read_bytes() == source.read_bytes()
 
     edition = (first / "editions" / "2026-10" / "index.html").read_text(encoding="utf-8")
     assert 'href="/docs/one/"' in edition
@@ -566,3 +569,71 @@ def test_without_area_registry_ignores_area_metadata(tmp_path: Path) -> None:
     result = run_build(src, tmp_path / "out")
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "out" / "areas").exists()
+
+
+@pytest.mark.parametrize("surface", ["atlas", "publications"])
+def test_markdown_sources_are_served_verbatim(tmp_path: Path, surface: str) -> None:
+    src, out = tmp_path / "src", tmp_path / "out"
+    sources = {
+        "editions/2026-10/index.md": b"# Edition 2026-10\n",
+        "editions/2026-10/atlas-fixture.md": (
+            "---\r\ntitle: Café\r\n---\r\n# Café\r\n\r\nKeep trailing spaces.  \r\n"
+        ).encode("utf-8"),
+        "legislation/efta-ii-memo/2026-10/index.md": b"# Memo\n\nNo final newline",
+    }
+    for relative, data in sources.items():
+        source = src / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(data)
+
+    result = run_build(src, out, surface)
+
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((out / "build-manifest.json").read_bytes())
+    for relative, data in sources.items():
+        assert (out / relative).read_bytes() == data
+        digest = hashlib.sha256(data).hexdigest()
+        assert manifest["inputs"]["src/" + relative] == digest
+        assert manifest["outputs"][relative] == digest
+    assert (out / "editions/2026-10/atlas-fixture/index.html").is_file()
+    assert (out / "legislation/efta-ii-memo/2026-10/index.html").is_file()
+
+
+@pytest.mark.parametrize("surface", ["atlas", "publications"])
+@pytest.mark.parametrize("base_url", [
+    "https://example.test/", "https://example.test/research&notes///",
+])
+def test_canonical_links_match_sitemap_routes(
+    tmp_path: Path, surface: str, base_url: str
+) -> None:
+    src, out = tmp_path / "src", tmp_path / "out"
+    src.mkdir()
+    write_base_fixture(src)
+    result = run_build(src, out, surface, "--base-url", base_url)
+    assert result.returncode == 0, result.stderr
+
+    sitemap = (out / "sitemap.xml").read_text(encoding="utf-8")
+    # Includes the generated home/editions pages and all Markdown pages.
+    for page in out.rglob("*.html"):
+        relative = page.relative_to(out)
+        route = "/" if relative == Path("index.html") else "/" + relative.parent.as_posix() + "/"
+        canonical = html.escape(base_url.rstrip("/") + route, quote=True)
+        rendered = page.read_text(encoding="utf-8")
+        assert rendered.count('rel="canonical"') == 1
+        assert f'<link rel="canonical" href="{canonical}">' in rendered
+        assert f"<loc>{canonical}</loc>" in sitemap
+
+
+def test_markdown_download_output_collision_is_refused_before_writes(tmp_path: Path) -> None:
+    src, out = tmp_path / "src", tmp_path / "out"
+    src.mkdir()
+    (src / "page.md").write_text("# Download\n", encoding="utf-8")
+    # Rendering this source would create a directory at the first source's download path.
+    (src / "page.md.md").write_text("# Conflicting route\n", encoding="utf-8")
+
+    result = run_build(src, out)
+
+    assert result.returncode == 1
+    assert "output collision" in result.stderr
+    assert "page.md" in result.stderr
+    assert not out.exists()
